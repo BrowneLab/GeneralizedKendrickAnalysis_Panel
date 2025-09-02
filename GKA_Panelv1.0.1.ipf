@@ -2,6 +2,9 @@
 #pragma rtGlobals=3		// Use modern global access method and strict wave access.
 #include <Graph Utility Procs>
 
+//HS r01 2025.09.02: update in Baseset2 and Valuecheck2 to create/update preview graph after changing second base
+// update in GKA_CalcMarq to allow creating or just updating preview graph after changing second base or scaling factor
+
 //This work is licensed under a Creative Commons Attribution-NonCommercial 4.0 International License.
 //Authors: Mitchell Alton (mitchell.alton@colorado.edu)
 //Code for drawing polygon & selecting them by Harald Stark (Harald.Stark@Aerodyne.com)
@@ -269,10 +272,35 @@ Function Valuecheck2(SV_Struct) : SetVariableControl
 	NVAR SecondDiv = root:GKA:seconddivisor
 	
 
-		SecondDiv = round(SecondDiv)
-		if (SecondDiv < 1)
-			SecondDiv = 1
-		endif
+		switch(SV_Struct.eventCode )
+			case 1: // mouse up
+			case 2: // Enter key
+			case 3: // Live update
+				SecondDiv = round(SecondDiv)
+				if (SecondDiv < 1)
+					SecondDiv = 1
+				endif
+				GKA_CalcMarq("preview") //HS r01 create/update preview graph
+			break
+		endSwitch
+
+		
+	return 0
+End
+
+Function SetVarProc(sva) : SetVariableControl
+	STRUCT WMSetVariableAction &sva
+
+	switch( sva.eventCode )
+		case 1: // mouse up
+		case 2: // Enter key
+		case 3: // Live update
+			Variable dval = sva.dval
+			String sval = sva.sval
+			break
+		case -1: // control being killed
+			break
+	endswitch
 
 	return 0
 End
@@ -333,6 +361,8 @@ Function Baseset2(PU_Struct) :PopupMenuControl
 				SecondBase = cIsoprene
 			endif
 			cd currdir[0]
+			
+			GKA_CalcMarq("preview") //HS r01 create/update preview graph
 			break
 		Case -1: //window closed
 			break
@@ -712,7 +742,7 @@ end
 //***********************************************************************
 
 function GKA_CalcMarq(ctrlname) : ButtonControl
-	String Ctrlname
+	String Ctrlname //HS r01 hijack ctrlname to allow creating preview graph
 	UpdateDirectories()
 	Wave/df currdir = root:GKA:currdir 
 	Wave W_inPoly = root:GKA:w_inpoly 
@@ -852,10 +882,27 @@ function GKA_CalcMarq(ctrlname) : ButtonControl
 		newGKA2 = "GKA_Marquee_"+ChosenBase2+"_"+sDiv + num2str(0)
 		duplicate/o secMK, $newMK
 		duplicate/o secGKA, $newGKA
-		print winlist("*",";","win:1")
-		killwindow/Z $NewGKA
-		killwindow/Z $NewGKA2
-		Display/k=1/n=$(NewGKA) $newGKA vs mz_Values
+		
+		Variable updateFlag = 0 //HS r01 create flag to log update status
+		if (stringMatch(ctrlName,"preview")) //HS r01 use different graph name and don't kill graph, but remove all traces
+			if (winType("GKA_preview2")==1) //graph yet
+				// remove all traces but don't change anything else
+				DoWindow/F GKA_preview2
+				getAxis bottom //grab axis scaling
+				updateFlag = 1
+				RemoveFromGraph/ALL
+				AppendToGraph $newGKA vs mz_Values
+				SetAxis bottom V_min, V_max // set to previous axis scaling
+			else //no graph yet
+				// create graph
+				Display/k=1/n=$("GKA_preview2") $newGKA vs mz_Values
+			endif
+		else
+			print winlist("*",";","win:1")
+			killwindow/Z $NewGKA
+			killwindow/Z $NewGKA2
+			Display/k=1/n=$(NewGKA) $newGKA vs mz_Values
+		endif
 		ModifyGraph mode=3,marker=19,msize=3,useMrkStrokeRGB=1
 		if (sizecheck==1)
 		
@@ -896,9 +943,11 @@ function GKA_CalcMarq(ctrlname) : ButtonControl
 		label bottom "Mass"
 		label left "GKA"
 		textboxstring = "Base= " +chosenbase2+"\rX= "+sDiv
-		TextBox/C/N=MarqueeStats textboxstring
+		TextBox/C/N=MarqueeStats/A=LT textboxstring //HS r01 add left top anchor to avoid overlap with colorscale
 		if (colorcheck==1 || sizecheck==1)
-			InstallDataPanelHook()
+			if (!updateFlag)
+				InstallDataPanelHook()
+			endif
 		endif
 //	endfor
 	cd currdir[0]
