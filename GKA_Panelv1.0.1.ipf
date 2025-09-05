@@ -2,6 +2,9 @@
 #pragma rtGlobals=3		// Use modern global access method and strict wave access.
 #include <Graph Utility Procs>
 
+//HS r02 2025.09.03: update in Baseset and Valuecheck to create/update preview graph after changing second base
+// update in GKA_CalcMarq to allow creating or just updating preview graph after changing second base or scaling factor
+// also update Valuecheck and Valuecheck2 for better performance
 //HS r01 2025.09.02: update in Baseset2 and Valuecheck2 to create/update preview graph after changing second base
 // update in GKA_CalcMarq to allow creating or just updating preview graph after changing second base or scaling factor
 
@@ -258,11 +261,17 @@ Function Valuecheck1(SV_Struct) : SetVariableControl
 	STRUCT WMSetVariableAction &SV_Struct
 	NVAR FirstDiv = root:GKA:divisor
 
-		FirstDiv = round(FirstDiv)
-		if (FirstDiv < 1)
-			FirstDiv = 1
-		endif
-	
+	switch(SV_Struct.eventCode ) //HS r02 add switch structure to avoid continuous call while just moving mouse over control
+		case 1: // mouse up
+		case 2: // Enter key
+		case 3: // Live update	
+			FirstDiv = round(FirstDiv)
+			if (FirstDiv < 1)
+				FirstDiv = 1
+			endif
+			GKA_Calc("preview") //HS r02 create/update preview graph
+		break
+	EndSwitch
 	return 0
 End
 
@@ -272,7 +281,7 @@ Function Valuecheck2(SV_Struct) : SetVariableControl
 	NVAR SecondDiv = root:GKA:seconddivisor
 	
 
-		switch(SV_Struct.eventCode )
+		switch(SV_Struct.eventCode ) //HS r02 add switch structure to avoid continuous call while just moving mouse over control
 			case 1: // mouse up
 			case 2: // Enter key
 			case 3: // Live update
@@ -288,6 +297,7 @@ Function Valuecheck2(SV_Struct) : SetVariableControl
 	return 0
 End
 
+//HS r02 activate (use) this function for multiple setvariables
 Function SetVarProc(sva) : SetVariableControl
 	STRUCT WMSetVariableAction &sva
 
@@ -297,6 +307,7 @@ Function SetVarProc(sva) : SetVariableControl
 		case 3: // Live update
 			Variable dval = sva.dval
 			String sval = sva.sval
+			GKA_Calc("preview") //HS r01 create/update preview graph
 			break
 		case -1: // control being killed
 			break
@@ -330,6 +341,7 @@ Function BaseSet(PU_Struct) :PopupMenuControl
 				Base = cIsoprene
 			endif
 			cd currdir[0]
+			GKA_Calc("preview") //HS r02 create/update preview graph
 			break
 		Case -1: //window closed
 			break
@@ -442,13 +454,13 @@ Function colorcheckbox(cba) : CheckBoxControl
 			break
 	endswitch
 	if (sizecheck==1 || colorcheck==1)
-		SetVariable IntensMinSet disable=0
-		SetVariable IntensMaxSet disable=0
+		SetVariable IntensMinSet disable=0, proc=SetVarProc//HS r02 add procedure to allow automatic update of preview graph
+		SetVariable IntensMaxSet disable=0, proc=SetVarProc//HS r02 add procedure to allow automatic update of preview graph
 		checkbox LogColorSize disable = 0
 		TitleBox RangeInstructions disable=0
 	else
-		SetVariable IntensMinSet disable=1
-		SetVariable IntensMaxSet disable=1
+		SetVariable IntensMinSet disable=1, proc=SetVarProc//HS r02 add procedure to allow automatic update of preview graph
+		SetVariable IntensMaxSet disable=1, proc=SetVarProc//HS r02 add procedure to allow automatic update of preview graph
 		TitleBox RangeInstructions disable=1
 		checkbox LogColorSize disable = 1
 	endif
@@ -687,12 +699,27 @@ function GKA_Calc(ctrlname) : ButtonControl
 
 		duplicate/o GKA, $newGKA
 		duplicate/o MK, $newMK
-
-		//kill windows that already have this name
-		killwindow/Z $NewGKA
-		killwindow/Z $NewGKA2
-
-		Display/k=1/N=$NewGKA $newGKA vs mz_Values
+		Variable updateFlag = 0 //HS r02 create flag to log update status
+		if (stringMatch(ctrlName,"preview")) //HS r02 use different graph name and don't kill graph, but remove all traces
+			if (winType("GKA_preview")==1) //graph exists
+				// remove all traces but don't change anything else
+				DoWindow/F GKA_preview
+				getAxis bottom //grab axis scaling
+				updateFlag = 1
+				RemoveFromGraph/ALL
+				AppendToGraph $newGKA vs mz_Values
+				SetAxis bottom V_min, V_max // set to previous axis scaling
+			else //no graph yet
+				// create graph
+				Display/k=1/n=$("GKA_preview") $newGKA vs mz_Values
+			endif
+		else
+			//kill windows that already have this name
+			killwindow/Z $NewGKA
+			killwindow/Z $NewGKA2
+	
+			Display/k=1/N=$NewGKA $newGKA vs mz_Values
+		endif
 		ModifyGraph mode=3,marker=19,msize=3,useMrkStrokeRGB=1
 		if (sizecheck==1)
 			if(logcheck==1)
@@ -732,10 +759,12 @@ function GKA_Calc(ctrlname) : ButtonControl
 		endif
 		label bottom "Mass"
 		label left "GKA"
-		textbox "Base= " +chosenbase+"\rX= "+sDiv
+		textbox/C/N=BaseStats/A=LT "Base= " +chosenbase+"\rX= "+sDiv
 		//for displaying z values when selected
 		if (colorcheck==1 || sizecheck==1)
-			InstallDataPanelHook()
+			if (!updateFlag) //HS r02 only add panel and hook if creating a new graph
+				InstallDataPanelHook()
+			endif
 		endif
 	cd currdir[0]
 end
@@ -885,7 +914,7 @@ function GKA_CalcMarq(ctrlname) : ButtonControl
 		
 		Variable updateFlag = 0 //HS r01 create flag to log update status
 		if (stringMatch(ctrlName,"preview")) //HS r01 use different graph name and don't kill graph, but remove all traces
-			if (winType("GKA_preview2")==1) //graph yet
+			if (winType("GKA_preview2")==1) //graph exists
 				// remove all traces but don't change anything else
 				DoWindow/F GKA_preview2
 				getAxis bottom //grab axis scaling
@@ -896,6 +925,9 @@ function GKA_CalcMarq(ctrlname) : ButtonControl
 			else //no graph yet
 				// create graph
 				Display/k=1/n=$("GKA_preview2") $newGKA vs mz_Values
+				if (winType("GKA_preview")==1) //primary preview graph exists, position the secondary one near it
+					AutoPositionWindow /M=0/R=GKA_preview
+				endif
 			endif
 		else
 			print winlist("*",";","win:1")
