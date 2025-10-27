@@ -2,6 +2,9 @@
 #pragma rtGlobals=3		// Use modern global access method and strict wave access.
 #include <Graph Utility Procs>
 
+//HS r04 2025.10.27: add new base option "Other" for m/z base in : prompt user for exact value, or, if Tofware is present, for formula in BaseSet
+//HS r03 2025.10.13: add some sanity checks in GKA_Calc
+// links to more setvariables and checkboxes to make preview update when changing other settings
 //HS r02 2025.09.03: update in Baseset and Valuecheck to create/update preview graph after changing second base
 // update in GKA_CalcMarq to allow creating or just updating preview graph after changing second base or scaling factor
 // also update Valuecheck and Valuecheck2 for better performance
@@ -218,7 +221,7 @@ Function KendrickAnalysisPanel()
 
 	//Creates the panel
 	Newpanel/K=1/M/N=GKA/W=(1,1,24,7)
-	PopupMenu ChooseBase, size={300,20}, Pos={10,5}, proc=Baseset, mode=1, title="Choose Base", Value="-;CH2;16O;14N;12C;Isoprene"
+	PopupMenu ChooseBase, size={300,20}, Pos={10,5}, proc=Baseset, mode=1, title="Choose Base", Value="-;CH2;16O;14N;12C;Isoprene;Other" //HS r04 new option: Other
 	PopupMenu ChooseSecondBase, size={300,20}, Pos={10,120}, proc=Baseset2, mode=1, title="Choose Second Base", Value="-;CH2;16O;14N;12C;Isoprene"
 	Popupmenu SetMZPath title="\f02m/z\f00 path",size={280,18},pos={200,5}, value=#listfunc, proc=mz_set
 	Popupmenu SetColorWave title="Color wave",size={280,18},pos={420,5},focusring=1, value= "*COLORTABLEPOP*",popvalue="Rainbow", proc=color_set
@@ -228,10 +231,10 @@ Function KendrickAnalysisPanel()
 	Popupmenu SetSizeWave title="Intensity wave",size={280,18},pos={200,30}, value=#listfunc, proc=size_set
 	SetVariable ChooseDivisors title="Integer Scaling Factor (\f02X\f00)",pos={10,30},size={180,20}, value=root:GKA:Divisor, proc=valuecheck1
 	SetVariable SecondDivisors title="Second Integer Scaling Factor (\f02X\f00)",size={230,20},pos={10,144},value=root:GKA:SecondDivisor, proc=valuecheck2
-	SetVariable ThreshValueSet title="Threshold Percentage (%)",size={200,20},pos={440,155},value=root:GKA:ThreshValue,disable=1
-	SetVariable MaxValueSet title="# of top peaks to remove",size={200,20},pos={440,115},value=root:GKA:numlargepoints,disable=1
-	SetVariable IntensMinSet title="Min. Value for Color/Size Scaling",size={300,20}, pos={570,40},value=root:GKA:IntensMin,disable=1
-	SetVariable IntensMaxSet title="Max. Value for Color/Size Scaling",size={300,20}, pos={570,60},value=root:GKA:IntensMax,disable=1
+	SetVariable ThreshValueSet title="Threshold Percentage (%)",size={200,20},pos={440,155},value=root:GKA:ThreshValue,disable=1, proc=SetVarProc //HS r03 link to set variable procedure
+	SetVariable MaxValueSet title="# of top peaks to remove",size={200,20},pos={440,115},value=root:GKA:numlargepoints,disable=1, proc=SetVarProc //HS r03 link to set variable procedure
+	SetVariable IntensMinSet title="Min. Value for Color/Size Scaling",size={300,20}, pos={570,40},value=root:GKA:IntensMin,disable=1, proc=SetVarProc //HS r03 link to set variable procedure
+	SetVariable IntensMaxSet title="Max. Value for Color/Size Scaling",size={300,20}, pos={570,60},value=root:GKA:IntensMax,disable=1, proc=SetVarProc //HS r03 link to set variable procedure
 	CheckBox ColorbyIntens title="Color by intensity?",proc=colorcheckbox,pos={420,55}
 	CheckBox SizebyIntens title="Size by intensity?",proc=sizecheckbox,pos={420,70}
 	CheckBox LogColorSize title="Log scale for color/size?",proc=logcheckbox,pos={570,80}, disable =1
@@ -324,22 +327,53 @@ Function BaseSet(PU_Struct) :PopupMenuControl
 	NVAR Base=root:GKA:Base
 	SVAR ChosenBase=root:GKA:chosenbase
 	wave/df currdir = root:GKA:currdir 
-
+	Variable ChosenNum, EM //HS r04 new locals
+	String baseName
+	baseName = ChosenBase //initialize with last chosen name, even if "Other" is not selected
 	Switch(PU_Struct.eventCode)
 		Case 2: //Clicked on something
 			cd currdir[1]
 			ChosenBase = PU_Struct.popstr
-			if (PU_Struct.popnum == 2)
-				Base = cCH2
-			elseif (PU_Struct.popnum == 3)
-				Base = c16O
-			elseif (PU_Struct.PopNum == 4)
-				Base = c14N
-			elseif (PU_Struct.PopNum == 5)
-				Base = c12C
-			elseif (PU_Struct.PopNum == 6)
-				Base = cIsoprene
-			endif
+			ChosenNum = PU_Struct.popnum //HS r04 use local variable
+			Switch(ChosenNum) //HS r04 replace if .. elseif with switch
+				Case 2:
+					Base = cCH2
+				Break
+				Case 3:
+					Base = c16O
+				Break
+				Case 4:
+					Base = c14N
+				Break
+				Case 5:
+					Base = c12C
+				Break
+				Case 6:
+					Base = cIsoprene
+				Break
+				Case 7: // HS r04 new option to choose "Other"
+					if (Exists("Tofware#tw_getEM")) //HS r04 prompt for formula if Tofware is present
+						Prompt baseName, "Enter name of base"
+						DoPrompt "Enter base formula", baseName
+						if (V_Flag) // user pressed "cancel"
+							Return 0
+						endif
+						EM = Tofware#tw_getEM(Tofware#tw_sortFormula(baseName),0)
+					else
+						EM = base
+						Prompt EM, "Enter exact mass of base"
+						Prompt baseName, "Enter name of base"
+						DoPrompt "Manually choose other mass", EM, baseName
+						if (V_Flag) // user pressed "cancel"
+							Return 0
+						endif
+						
+					endif
+					Base = EM
+					ChosenBase = baseName
+				Break
+			EndSwitch
+
 			cd currdir[0]
 			GKA_Calc("preview") //HS r02 create/update preview graph
 			break
@@ -394,6 +428,7 @@ Function Mz_Set(PU_Struct) :PopupMenuControl
 			string currfold = getdatafolder(1)
 			menustring = PU_Struct.PopStr
 			MZ_Path = currfold+menustring
+			GKA_Calc("preview") //HS r03 create/update preview graph
 			break
 		Case -1: //window closed
 			break
@@ -434,6 +469,7 @@ Function size_Set(PU_Struct) :PopupMenuControl
 			string currfold = getdatafolder(1)
 			menustring = PU_Struct.PopStr
 			size_path = currfold+menustring
+			GKA_Calc("preview") //HS r03 create/update preview graph
 			break
 		Case -1: //window closed
 			break
@@ -454,17 +490,17 @@ Function colorcheckbox(cba) : CheckBoxControl
 			break
 	endswitch
 	if (sizecheck==1 || colorcheck==1)
-		SetVariable IntensMinSet disable=0, proc=SetVarProc//HS r02 add procedure to allow automatic update of preview graph
-		SetVariable IntensMaxSet disable=0, proc=SetVarProc//HS r02 add procedure to allow automatic update of preview graph
-		checkbox LogColorSize disable = 0
-		TitleBox RangeInstructions disable=0
+		SetVariable IntensMinSet disable=0, proc=SetVarProc, win=$cba.win//HS r02 add procedure to allow automatic update of preview graph
+		SetVariable IntensMaxSet disable=0, proc=SetVarProc, win=$cba.win//HS r02 add procedure to allow automatic update of preview graph
+		checkbox LogColorSize disable = 0, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		TitleBox RangeInstructions disable=0, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
 	else
-		SetVariable IntensMinSet disable=1, proc=SetVarProc//HS r02 add procedure to allow automatic update of preview graph
-		SetVariable IntensMaxSet disable=1, proc=SetVarProc//HS r02 add procedure to allow automatic update of preview graph
-		TitleBox RangeInstructions disable=1
-		checkbox LogColorSize disable = 1
+		SetVariable IntensMinSet disable=1, proc=SetVarProc, win=$cba.win//HS r02 add procedure to allow automatic update of preview graph
+		SetVariable IntensMaxSet disable=1, proc=SetVarProc, win=$cba.win//HS r02 add procedure to allow automatic update of preview graph
+		TitleBox RangeInstructions disable=1, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		checkbox LogColorSize disable = 1, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
 	endif
-
+	GKA_Calc("preview") //HS r03 create/update preview graph
 	return 0
 End
 
@@ -482,16 +518,17 @@ Function sizecheckbox(cba) : CheckBoxControl
 			break
 	endswitch
 	if (sizecheck==1 || colorcheck==1)
-		SetVariable IntensMinSet disable=0
-		SetVariable IntensMaxSet disable=0
-		checkbox LogColorSize disable = 0
-		TitleBox RangeInstructions disable=0
+		SetVariable IntensMinSet win=$cba.win, disable=0 //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		SetVariable IntensMaxSet win=$cba.win, disable=0 //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		checkbox LogColorSize win=$cba.win, disable = 0 //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		TitleBox RangeInstructions win=$cba.win, disable=0 //HS r03 add window name to avoid adding phantom setvariable to other graphs
 	else
-		SetVariable IntensMinSet disable=1
-		SetVariable IntensMaxSet disable=1
-		checkbox LogColorSize disable = 1
-		TitleBox RangeInstructions disable=1
+		SetVariable IntensMinSet win=$cba.win, disable=1 //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		SetVariable IntensMaxSet win=$cba.win, disable=1 //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		checkbox LogColorSize win=$cba.win, disable = 1 //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		TitleBox RangeInstructions win=$cba.win, disable=1 //HS r03 add window name to avoid adding phantom setvariable to other graphs
 	endif
+	GKA_Calc("preview") //HS r03 create/update preview graph
 	return 0
 End
 
@@ -510,16 +547,17 @@ Function logcheckbox(cba) : CheckBoxControl
 			break
 	endswitch
 	if (sizecheck==1 || colorcheck==1)
-		SetVariable IntensMinSet disable=0
-		SetVariable IntensMaxSet disable=0
-		checkbox LogColorSize disable = 0
-		TitleBox RangeInstructions disable=0
+		SetVariable IntensMinSet disable=0, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		SetVariable IntensMaxSet disable=0, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		checkbox LogColorSize disable = 0, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		TitleBox RangeInstructions disable=0, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
 	else
-		SetVariable IntensMinSet disable=1
-		SetVariable IntensMaxSet disable=1
-		checkbox LogColorSize disable = 1
-		TitleBox RangeInstructions disable=1
+		SetVariable IntensMinSet disable=1, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		SetVariable IntensMaxSet disable=1, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		checkbox LogColorSize disable = 1, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
+		TitleBox RangeInstructions disable=1, win=$cba.win //HS r03 add window name to avoid adding phantom setvariable to other graphs
 	endif
+	GKA_Calc("preview") //HS r03 create/update preview graph
 	return 0
 End
 
@@ -534,7 +572,7 @@ Function signcheckbox(cba) : CheckBoxControl
 		case -1: // control being killed
 			break
 	endswitch
-
+	GKA_Calc("preview") //HS r03 create/update preview graph
 	return 0
 End
 
@@ -547,14 +585,16 @@ Function threshcheckbox(cba) : CheckBoxControl
 			threshcheck = cba.checked
 			if (cba.checked ==1)
 				setvariable threshvalueset disable=0
+				
 			else
 				setvariable threshvalueset disable=1
 			endif
+			GKA_Calc("preview") //HS r03 create/update preview graph if changed
 			break
 		case -1: // control being killed
 			break
 	endswitch
-
+	GKA_Calc("preview") //HS r03 create/update preview graph
 	return 0
 End
 
@@ -570,6 +610,7 @@ Function maxcheckbox(cba) : CheckBoxControl
 			else
 				setvariable maxvalueset disable=1
 			endif
+			GKA_Calc("preview") //HS r03 create/update preview graph if checked
 			break
 		case -1: // control being killed
 			break
@@ -602,8 +643,19 @@ function GKA_Calc(ctrlname) : ButtonControl
 	Variable vDiv
 	Variable Ioncharge = 1
 
+	Wave/Z mzWv = $mz_path //HS r03 don't continue if no m/z wave exists
+	if (!WaveExists(mzWv))
+		cd currdir[0]
+		Return 0
+	endif
 	duplicate/o $mz_path, mz_Values
 
+	Wave/Z sizeWv = $size_path //HS r03 don't continue if no size wave exists
+	if (!WaveExists(sizeWv))
+		cd currdir[0]
+		Return 0
+	endif
+	
 	if (colorcheck == 1 || threshcheck==1 ||sizecheck==1||maxcheck==1)
 		if(strlen(size_path) > 0)
 			if(numpnts($size_path) != numpnts($mz_path))
@@ -704,7 +756,7 @@ function GKA_Calc(ctrlname) : ButtonControl
 			if (winType("GKA_preview")==1) //graph exists
 				// remove all traces but don't change anything else
 				DoWindow/F GKA_preview
-				getAxis bottom //grab axis scaling
+				getAxis/Q bottom //grab axis scaling //HS r03 add /Q flag to avoid output in history
 				updateFlag = 1
 				RemoveFromGraph/ALL
 				AppendToGraph $newGKA vs mz_Values
