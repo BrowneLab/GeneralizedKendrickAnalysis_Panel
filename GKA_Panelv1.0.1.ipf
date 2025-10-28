@@ -2,6 +2,8 @@
 #pragma rtGlobals=3		// Use modern global access method and strict wave access.
 #include <Graph Utility Procs>
 
+//HS r05 2025.10.27: new function AddFormulaLine to allow adding formulas from list or range formula (if Tofware is present) to GKA plot
+//	need a few more ancillary functions, isLetter, isDigit, AddCaseMarkers, and CombineElemRangeStrings
 //HS r04 2025.10.27: add new base option "Other" for m/z base in : prompt user for exact value, or, if Tofware is present, for formula in BaseSet
 //HS r03 2025.10.13: add some sanity checks in GKA_Calc
 // links to more setvariables and checkboxes to make preview update when changing other settings
@@ -352,14 +354,14 @@ Function BaseSet(PU_Struct) :PopupMenuControl
 					Base = cIsoprene
 				Break
 				Case 7: // HS r04 new option to choose "Other"
-					if (Exists("Tofware#tw_getEM")) //HS r04 prompt for formula if Tofware is present
+					#if (Exists("Tofware#tw_getEM")) //HS r04 prompt for formula if Tofware is present, make this a compiler conditional to avoid "missing function" error
 						Prompt baseName, "Enter name of base"
 						DoPrompt "Enter base formula", baseName
 						if (V_Flag) // user pressed "cancel"
 							Return 0
 						endif
 						EM = Tofware#tw_getEM(Tofware#tw_sortFormula(baseName),0)
-					else
+					#else
 						EM = base
 						Prompt EM, "Enter exact mass of base"
 						Prompt baseName, "Enter name of base"
@@ -368,7 +370,7 @@ Function BaseSet(PU_Struct) :PopupMenuControl
 							Return 0
 						endif
 						
-					endif
+					#endif
 					Base = EM
 					ChosenBase = baseName
 				Break
@@ -1338,3 +1340,200 @@ Function StartDrawing(ctrlname) : ButtonControl
 	String Ctrlname
 	PolySelectAndCreate()
 end
+
+//HS r05 new option to add a line according to a list of formulas or a range formula (e.g. "C10H12O(6-10)NO3")
+Function AddRangeFormulaLines(rangeForm, wName, flag)
+String rangeForm
+String wName
+Variable flag
+	
+	Variable printFlag, resetFlag
+	Variable nInputs, i, vDiv, nForm, oneMz, MK, RMK, GKA, nAll, iTr
+	Variable nRows, nCols, nLays, nChunks, iRow, iCol, iLay, iChunk, rr, gg, bb
+	String oneInput, oneForm, trNm, trList, tagNm
+	printFlag = (flag & 1)>0
+	resetFlag = (flag & 2)>0
+#if (Exists("Tofware#tw_sortFormula"))
+	UpdateDirectories()
+	wave/df currdir = root:GKA:currdir 
+	cd currdir[1]
+	NVAR Divisor, base, signcheck
+	//all variables should exist in this directory
+	vDiv = Divisor
+	nInputs = itemsInList(rangeForm)
+	nAll = 0
+	make/N=1/T/O allForm // initialize, will be redimensioned below
+	if (StrLen(wName) && resetFlag) // remove all previous range formulas from graph
+		trList = TraceNameList(wName,";",1)
+		trList = ListMatch(trList,"RF_*")
+		For (iTr=itemsinList(trList)-1;iTr>-1;iTr-=1)
+			trNm = StringFromList(iTr,trList)
+			RemoveFromGraph/W=$wName $trNm
+		EndFor
+	endif
+	For (i=0; i<nInputs; i+=1) // not sure it's a good idea to allow multiple inputs
+		oneInput = StringFromList(i,rangeForm)
+		Tofware#tw_panel2_createRangeForms(oneInput, allForm,printFlag) // this creates a multidimensional wave according to range formula, one dimension per range
+		nRows = dimsize(allForm,0)
+		nCols = dimsize(allForm,1)
+		nLays = dimsize(allForm,2)
+		nChunks = dimsize(allForm,3)
+		Wave colWv = Tofware#tw_batch_getNiceColors(nLays) // get different colors for different layers
+		Make/N=(nRows, nCols, nLays, nChunks)/O allMz, allGKA
+		For (iChunk=0;iChunk<max(1,nChunks);iChunk+=1)
+			For (iLay=0;iLay<max(1,nLays);iLay+=1)
+				rr = colWv[iLay][0]
+				gg = colWv[iLay][1]
+				bb = colWv[iLay][2]
+				For (iCol=0;iCol<nCols;iCol+=1)
+					For (iRow=0; iRow<nRows; iRow+=1)
+						oneForm = allForm[iRow][iCol][iLay][iChunk]
+						oneMz = Tofware#tw_getEM(Tofware#tw_sortFormula(oneForm),0)
+						allMz[iRow][iCol][iLay][iChunk] = oneMz
+						MK = oneMz*(vDiv/base) 
+						RMK = round(MK) //round value of the MK
+						if (signcheck==1)
+							GKA = RMK - MK
+						elseif (signcheck==0)
+							GKA = MK - RMK
+						endif
+						allGKA[iRow][iCol][iLay][iChunk] = GKA
+					EndFor
+					
+					if (StrLen(wName)) // add last row to graph
+						trNm = "RF_"+GetDimLabel(allForm,1,iCol)+GetDimLabel(allForm,2,iLay)+GetDimLabel(allForm,3,iChunk)
+						trNm = "RF_"+ReplaceString(GetDimLabel(allForm,0,nRows-1),oneForm,"") //this gives the base formula
+						trNm += CombineElemRangeStrings(GetDimLabel(allForm,0,0),GetDimLabel(allForm,0,nRows-1),"_") // this adds the elemental range
+						trNm = CleanUpName(trNm,0)
+						RemoveFromGraph/W=$wName/Z $trNm
+						appendtograph/W=$wName allGKA[][iCol][iLay][iChunk]/TN=$trNm vs allMz[][iCol][iLay][iChunk]
+						ModifyGraph/W=$wName mode($trNm)=4,marker($trNm)=8,opaque($trNm)=1,useMrkStrokeRGB($trNm)=1, msize($trNm)=2
+						ModifyGraph/W=$wName rgb($trNm) = (rr,gg,bb), lsize($trNm) = 2
+						tagNm = ReplaceString(GetDimLabel(allForm,0,nRows-1),oneForm,"")
+						tagNm += CombineElemRangeStrings(GetDimLabel(allForm,0,0),GetDimLabel(allForm,0,nRows-1),"-")
+						tagNm = AddCaseMarkers(tagNm)
+						Tag/W=$wName/C/N=$("Tag_"+trNm)/F=0/G=(rr,gg,bb)/A=LC/X=1/Y=0/L=0 $trNm, nRows-1,tagNm
+					endif
+				EndFor
+			EndFor
+		EndFor
+	EndFor
+//	sDiv = num2str(Divisor)
+//
+//	duplicate/o mz_values MK, RMK, GKA
+//	
+//	//note that round() is used in this function. This is not allowed in 
+//	//quantity calculus, but programatically there is not another way to get the 
+//	//nominal mass of unknown compounds without using round()
+
+	cd currdir[0]
+#else
+	DoAlert 0, "This option only exists within Tofware!"
+#endif
+End Function
+
+// Returns 1 if the character is a letter (A–Z or a–z), 0 otherwise
+Function IsLetter(ch)
+    String ch
+    Variable code = char2num(ch)
+    return ((code >= 65 && code <= 90) || (code >= 97 && code <= 122))
+End
+
+// Combines strings like "O10" + "O15" → "O10-15", "Cl2" + "Cl6" → "Cl2-6"
+Function/S CombineElemRangeStrings(str1, str2,combStr)
+    String str1, str2, combStr
+    Variable i1, i2
+    String prefix, combined
+
+    Variable n = 0
+    do
+        n += 1
+    while (IsLetter(str1[n-1]))
+    prefix = str1[0, n-2]
+
+    i1 = str2num(str1[n-1, inf])
+    i2 = str2num(str2[n-1, inf])
+
+    combined = prefix + num2str(i1) + combStr + num2str(i2)
+    return combined
+End
+
+// Returns 1 if the character is a digit (0–9), otherwise 0
+Function IsDigit(ch)
+    String ch
+    Variable code = char2num(ch)
+    return (code >= 48 && code <= 57)
+End
+
+// Adds \S before each run of digits and \M after
+// Example: "Cl2O15" → "Cl\S2\MO\S15\M"
+Function/S AddCaseMarkers(inStr)
+    String inStr
+    String outStr = ""
+    Variable i, len = strlen(inStr)
+    Variable inNumber = 0
+    String ch
+
+    for (i = 0; i < len; i += 1)
+        ch = inStr[i]
+
+        if (IsDigit(ch) || char2num(ch)==45)
+            if (!inNumber)
+                outStr += "\\B"      // start of numeric block
+                inNumber = 1
+            endif
+            outStr += ch
+        else
+            if (inNumber)
+                outStr += "\\M"      // end of numeric block
+                inNumber = 0
+            endif
+            outStr += ch
+        endif
+    endfor
+
+    if (inNumber)
+        outStr += "\\M"              // close final numeric block if string ends in digits
+    endif
+
+    return outStr
+End
+
+//HS r05 not currently used but may come in handy
+// Works for "NO3_15" + "NO3_22" -> "NO3_15-22"
+// Also fine for "O10" + "O15" -> "O10-15"
+Function/S CombineStrings_RegexGeneral(str1, str2)
+    String str1, str2
+    String p1 = "", n1s = "", p2 = "", n2s = ""
+    Variable nTok
+
+    str1 = TrimString(str1)
+    str2 = TrimString(str2)
+
+    // Capture (anything up to last digits)(last digits)
+    SplitString/E="^(.*?)(\\d+)\\s*$" str1, p1, n1s
+    nTok = V_Flag
+    if (nTok != 2)
+        Abort "Input '"+str1+"' must end with digits (e.g., 'SF6_50')."
+    endif
+
+    SplitString/E="^(.*?)(\\d+)\\s*$" str2, p2, n2s
+    nTok = V_Flag
+    if (nTok != 2)
+        Abort "Input '"+str2+"' must end with digits (e.g., 'SF6_50')."
+    endif
+
+    if (CmpStr(p1, p2))
+        Abort "Prefixes don't match: '"+p1+"' vs '"+p2+"'."
+    endif
+
+    return p1 + n1s + "-" + n2s
+End
+
+// Examples:
+// Print CombineStrings_RegexGeneral("O10","O15")         // O10-15
+// Print CombineStrings_RegexGeneral("Cl2","Cl6")         // Cl2-6
+// Print CombineStrings_RegexGeneral("NO3_15","NO3_22")   // NO3_15-22
+// Print CombineStrings_RegexGeneral("SF6_50","SF6_100")  // SF6_50-100
+
+
